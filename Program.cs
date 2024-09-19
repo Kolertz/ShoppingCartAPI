@@ -2,6 +2,7 @@ using Azure;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Conventions;
 using Microsoft.IdentityModel.Tokens;
 using ShoppingList;
 using ShoppingList.Entities;
@@ -22,6 +23,7 @@ builder.Services.AddDbContext<ApplicationContext>(options => options.UseSqlServe
 
 // Чтение конфигурации JWT из appsettings.json
 var jwtSettings = builder.Configuration.GetSection("Jwt");
+var adminIds = builder.Configuration.GetValue<List<int>>("AdminIds")!;
 
 // Добавление аутентификации
 builder.Services.AddAuthentication(options =>
@@ -123,7 +125,7 @@ app.MapDelete("/cart/remove", async (HttpContext context, ApplicationContext db,
     }
 
     var item = await db.UserItems.FirstOrDefaultAsync(x => x.ItemId == itemId && x.Status == ItemStatus.InCart);
-    if (item == null)
+    if (item is null)
     {
         return Results.BadRequest("Item is not found.");
     }
@@ -149,7 +151,7 @@ app.MapPatch("/cart/change-quantity", async (HttpContext context, ApplicationCon
     }
 
     var item = await db.UserItems.FirstOrDefaultAsync(x => x.ItemId == itemId && x.Status == ItemStatus.InCart);
-    if (item == null)
+    if (item is null)
     {
         return Results.BadRequest("Item is not found.");
     }
@@ -179,7 +181,7 @@ app.MapPost("/cart/add", async (HttpContext context, ApplicationContext db, int 
     }
 
     var item = await db.Items.AsNoTracking().FirstOrDefaultAsync(x => x.Id == itemId);
-    if (item == null)
+    if (item is null)
     {
         return Results.BadRequest("Item is not found.");
     }
@@ -213,7 +215,7 @@ app.MapPost("/cart/checkout", async (HttpContext context, ApplicationContext db)
     }
 
     var user = await db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId);
-    if (user == null)
+    if (user is null)
     {
         return Results.BadRequest("User is not found.");
     }
@@ -274,7 +276,7 @@ app.MapGet("/my-storage", async (HttpContext context, ApplicationContext db) =>
 
 app.MapGet("/catalog", async (ApplicationContext db) =>
 {
-    return await db.Items.Select(i => new
+    return await db.Items.Where(i => i.Quantity > 0).Select(i => new
     {
         i.Id,
         i.Name,
@@ -295,8 +297,7 @@ app.MapPost("/register", async (string login, string password, ApplicationContex
     var user = new User { Login = login, Password = password };
     await db.AddAsync(user);
     await db.SaveChangesAsync();
-
-    var token = GenerateJwtToken(jwtSettings, user.Login, user.Id);
+    var token = GenerateJwtToken(jwtSettings, user.Login, user.Id, adminIds);
     return Results.Ok(new { token });
 })
     .WithOpenApi();
@@ -309,9 +310,9 @@ app.MapPost("/login", async (HttpContext context, string login, string password,
     }
 
     var user = await db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Login == login && u.Password == password);
-    if (user != null)
+    if (user is not null)
     {
-        var token = GenerateJwtToken(jwtSettings, user.Login, user.Id);
+        var token = GenerateJwtToken(jwtSettings, user.Login, user.Id, adminIds);
         return Results.Ok(new { token });
     }
 
@@ -327,7 +328,7 @@ app.MapGet("/balance", async (HttpContext context, ApplicationContext db) =>
     }
 
     var user = await db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId);
-    if (user == null)
+    if (user is null)
     {
         return Results.BadRequest("User is not found.");
     }
@@ -348,8 +349,8 @@ app.MapPatch("/balance/add", async (HttpContext context, ApplicationContext db, 
         return Results.BadRequest("User is not found.");
     }
 
-    var user = await db.Users.FirstOrDefaultAsync(u => u.Id == userId);
-    if (user == null)
+    var user = await db.Users.FindAsync(userId);
+    if (user is null)
     {
         return Results.BadRequest("User is not found.");
     }
@@ -362,9 +363,63 @@ app.MapPatch("/balance/add", async (HttpContext context, ApplicationContext db, 
     .WithOpenApi()
     .RequireAuthorization();
 
+app.MapPost("/storage/item/add", async (ApplicationContext db, string name, int quantity, decimal price) =>
+{
+    if (quantity < 0 || price <= 0 || string.IsNullOrWhiteSpace(name))
+    {
+        return Results.BadRequest("Wrong input");
+    }
+
+    await db.Items.AddAsync(new Item
+    {
+        Name = name,
+        Quantity = quantity,
+        Price = price
+    });
+
+    await db.SaveChangesAsync();
+    return Results.Ok();
+})
+    .WithOpenApi()
+    .RequireAuthorization(new AuthorizeAttribute { Roles = "Admin" });
+
+app.MapPatch("/storage/item/change", async (ApplicationContext db, int id, string? name, decimal? price, int? newQuantity, int? addToQuantity) =>
+{
+    // Проверяем некорректное использование newQuantity и addToQuantity
+    if (newQuantity.HasValue && addToQuantity.HasValue)
+    {
+        return Results.BadRequest("You can't use \"newQuantity\" and \"addToQuantity\" at the same time.");
+    }
+
+    // Ищем item в базе
+    var item = await db.Items.FindAsync(id);
+    if (item is null)
+    {
+        return Results.NotFound("Item not found.");
+    }
+
+    // Обновляем поля объекта, если они не null
+    item.Quantity = newQuantity ?? item.Quantity + (addToQuantity ?? 0);
+    if (!string.IsNullOrEmpty(name))
+    {
+        item.Name = name;
+    }
+    if (price.HasValue)
+    {
+        item.Price = price.Value;
+    }
+
+    // Сохраняем изменения
+    await db.SaveChangesAsync();
+
+    return Results.Ok();
+})
+    .WithOpenApi()
+    .RequireAuthorization(new AuthorizeAttribute { Roles = "Admin" });
+
 app.Run();
 
-static string GenerateJwtToken(IConfigurationSection jwtSettings, string login, int id)
+static string GenerateJwtToken(IConfigurationSection jwtSettings, string login, int id, List<int> adminIds)
 {
     var securityKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSettings["Key"]!));
     var credentials = new SigningCredentials(securityKey, SecurityAlgorithms.HmacSha256);
@@ -373,6 +428,16 @@ static string GenerateJwtToken(IConfigurationSection jwtSettings, string login, 
         new(ClaimTypes.NameIdentifier, id.ToString()),
         new(ClaimTypes.Name, login)
     };
+
+    if (adminIds.Contains(id))
+    {
+        claims.Add(new Claim(ClaimTypes.Role, "Admin"));
+    }
+    else
+    {
+        claims.Add(new Claim(ClaimTypes.Role, "User"));
+    }
+
     var token = new JwtSecurityToken(
         issuer: jwtSettings["Issuer"],
         audience: jwtSettings["Audience"],
