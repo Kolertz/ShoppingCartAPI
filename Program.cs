@@ -115,11 +115,32 @@ app.MapGet("/cart", async (HttpContext context, ApplicationContext db) =>
     .WithOpenApi()
     .RequireAuthorization();
 
-app.MapPut("/cart/remove", async (HttpContext context, ApplicationContext db, int itemId, int? quantity) =>
+app.MapDelete("/cart/remove", async (HttpContext context, ApplicationContext db, int itemId) =>
 {
-    if (itemId <= 0 || quantity <= 0)
+    if (!int.TryParse(context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out int userId))
     {
-        return Results.BadRequest();
+        return Results.BadRequest("User is not found.");
+    }
+
+    var item = await db.UserItems.FirstOrDefaultAsync(x => x.ItemId == itemId && x.Status == ItemStatus.InCart);
+    if (item == null)
+    {
+        return Results.BadRequest("Item is not found.");
+    }
+
+    db.Remove(item);
+    await db.SaveChangesAsync();
+
+    return Results.Ok();
+})
+    .WithOpenApi()
+    .RequireAuthorization();
+
+app.MapPatch("/cart/change-quantity", async (HttpContext context, ApplicationContext db, int itemId, int quantity) =>
+{
+    if (quantity <= 0)
+    {
+        return Results.BadRequest("Quantity must be greater than 0.");
     }
 
     if (!int.TryParse(context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out int userId))
@@ -133,14 +154,12 @@ app.MapPut("/cart/remove", async (HttpContext context, ApplicationContext db, in
         return Results.BadRequest("Item is not found.");
     }
 
-    if (quantity is null || quantity > item.Quantity)
+    if (quantity >= item.Quantity)
     {
-        db.Remove(item);
-    } else
-    {
-        item.Quantity -= (int)quantity;
+        return Results.BadRequest("Quantity exceeds available items in the cart. Use /cart/remove to remove item.");
     }
 
+    item.Quantity -= quantity;
     await db.SaveChangesAsync();
     return Results.Ok();
 })
@@ -220,6 +239,7 @@ app.MapPost("/cart/checkout", async (HttpContext context, ApplicationContext db)
         foreach (var item in fullItems)
         {
             item.Status = ItemStatus.Purchased;
+            item.Item!.Quantity -= item.Quantity;
         }
         await db.SaveChangesAsync();
         return Results.Ok($"You spent {price:N2}$. Well done!");
