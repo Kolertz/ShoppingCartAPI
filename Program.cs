@@ -97,9 +97,9 @@ app.UseHttpsRedirection();
 
 app.MapGet("/cart", async (HttpContext context, ApplicationContext db, IMapper mapper) =>
 {
-    if (!int.TryParse(context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out int userId))
+    if (!TryGetUserId(context, out int userId))
     {
-        return Results.BadRequest("User is not found.");
+        return Results.NotFound("User is not found.");
     }
 
     var items = await GetCart(db, userId);
@@ -107,7 +107,7 @@ app.MapGet("/cart", async (HttpContext context, ApplicationContext db, IMapper m
 
     if (errors != "")
     {
-        return Results.BadRequest(errors);
+        return Results.Conflict(errors);
     }
     else
     {
@@ -122,21 +122,21 @@ app.MapGet("/cart", async (HttpContext context, ApplicationContext db, IMapper m
 
 app.MapDelete("/cart/remove", async (HttpContext context, ApplicationContext db, int itemId) =>
 {
-    if (!int.TryParse(context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out int userId))
+    if (!TryGetUserId(context, out int userId))
     {
-        return Results.BadRequest("User is not found.");
+        return Results.NotFound("User is not found.");
     }
 
     var item = await db.UserItems.FirstOrDefaultAsync(x => x.ItemId == itemId && x.Status == ItemStatus.InCart);
     if (item is null)
     {
-        return Results.BadRequest("Item is not found.");
+        return Results.NotFound("Item is not found.");
     }
 
     db.Remove(item);
     await db.SaveChangesAsync();
 
-    return Results.Ok();
+    return Results.NoContent();
 })
     .WithOpenApi()
     .RequireAuthorization();
@@ -148,25 +148,26 @@ app.MapPatch("/cart/change-quantity", async (HttpContext context, ApplicationCon
         return Results.BadRequest("Quantity must be greater than 0.");
     }
 
-    if (!int.TryParse(context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out int userId))
+    if (!TryGetUserId(context, out int userId))
     {
-        return Results.BadRequest("User is not found.");
+        return Results.NotFound("User is not found.");
     }
 
     var item = await db.UserItems.FirstOrDefaultAsync(x => x.ItemId == itemId && x.Status == ItemStatus.InCart);
     if (item is null)
     {
-        return Results.BadRequest("Item is not found.");
+        return Results.NotFound("Item is not found.");
     }
 
     if (quantity >= item.Quantity)
     {
-        return Results.BadRequest("Quantity exceeds available items in the cart. Use /cart/remove to remove item.");
+        return Results.Conflict("Quantity exceeds available items in the cart. Use /cart/remove to remove item.");
     }
 
     item.Quantity -= quantity;
     await db.SaveChangesAsync();
-    return Results.Ok();
+
+    return Results.NoContent();
 })
     .WithOpenApi()
     .RequireAuthorization();
@@ -178,15 +179,15 @@ app.MapPost("/cart/add", async (HttpContext context, ApplicationContext db, int 
         return Results.BadRequest();
     }
 
-    if (!int.TryParse(context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out int userId))
+    if (!TryGetUserId(context, out int userId))
     {
-        return Results.BadRequest("User is not found.");
+        return Results.NotFound("User is not found.");
     }
 
     var item = await db.Items.AsNoTracking().FirstOrDefaultAsync(x => x.Id == itemId);
     if (item is null)
     {
-        return Results.BadRequest("Item is not found.");
+        return Results.NotFound("Item is not found.");
     }
 
     if (quantity > item.Quantity)
@@ -205,29 +206,29 @@ app.MapPost("/cart/add", async (HttpContext context, ApplicationContext db, int 
     await db.UserItems.AddAsync(userItem);
     await db.SaveChangesAsync();
 
-    return Results.Ok($"Item {item.Name} in quantity {userItem.Quantity} was added to your cart");
+    return Results.NoContent();
 })
     .WithOpenApi()
     .RequireAuthorization();
 
 app.MapPost("/cart/checkout", async (HttpContext context, ApplicationContext db) =>
 {
-    if (!int.TryParse(context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out int userId))
+    if (!TryGetUserId(context, out int userId))
     {
-        return Results.BadRequest("User is not found.");
+        return Results.NotFound("User is not found.");
     }
 
     var user = await db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId);
     if (user is null)
     {
-        return Results.BadRequest("User is not found.");
+        return Results.NotFound("User is not found.");
     }
 
     var items = await GetCart(db, userId);
     var errors = GenerateStockWarningMessages(items);
     if (errors != "")
     {
-        return Results.BadRequest(errors);
+        return Results.Conflict(errors);
     } else
     {
         var fullItems = await db.UserItems
@@ -237,7 +238,7 @@ app.MapPost("/cart/checkout", async (HttpContext context, ApplicationContext db)
         var price = items.Sum(i => i.Price * i.OriginalQuantity);
         if (user.Balance < price)
         {
-            return Results.BadRequest($"Not enough balance({user.Balance}). Increase your balance by atleast {price - user.Balance:N2}");
+            return Results.Conflict($"Not enough balance({user.Balance}). Increase your balance by atleast {price - user.Balance:N2}");
         }
 
         user.Balance -= price;
@@ -247,6 +248,7 @@ app.MapPost("/cart/checkout", async (HttpContext context, ApplicationContext db)
             item.Item!.Quantity -= item.Quantity;
         }
         await db.SaveChangesAsync();
+
         return Results.Ok($"You spent {price:N2}$. Well done!");
     }
 
@@ -256,9 +258,9 @@ app.MapPost("/cart/checkout", async (HttpContext context, ApplicationContext db)
 
 app.MapGet("/my-storage", async (HttpContext context, ApplicationContext db) =>
 {
-    if (!int.TryParse(context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out int userId))
+    if (!TryGetUserId(context, out int userId))
     {
-        return Results.BadRequest("User is not found.");
+        return Results.NotFound("User is not found.");
     }
 
     var items = await db.UserItems
@@ -272,6 +274,7 @@ app.MapGet("/my-storage", async (HttpContext context, ApplicationContext db) =>
             ui.Item!.Price
         })
         .ToListAsync();
+
     return Results.Ok(items);
 })
     .WithOpenApi()
@@ -279,13 +282,15 @@ app.MapGet("/my-storage", async (HttpContext context, ApplicationContext db) =>
 
 app.MapGet("/catalog", async (ApplicationContext db) =>
 {
-    return await db.Items.Where(i => i.Quantity > 0).Select(i => new
+    var items = await db.Items.Where(i => i.Quantity > 0).Select(i => new
     {
         i.Id,
         i.Name,
         i.Quantity,
         i.Price
     }).ToListAsync();
+
+    return Results.Ok(items);
 })
     .WithOpenApi();
 
@@ -319,21 +324,21 @@ app.MapPost("/login", async (HttpContext context, string login, string password,
         return Results.Ok(new { token });
     }
 
-    return Results.BadRequest("User is not found.");
+    return Results.NotFound("User is not found.");
 })
     .WithOpenApi();
 
 app.MapGet("/balance", async (HttpContext context, ApplicationContext db) =>
 {
-    if (!int.TryParse(context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out int userId))
+    if (!TryGetUserId(context, out int userId))
     {
-        return Results.BadRequest("User is not found.");
+        return Results.NotFound("User is not found.");
     }
 
     var user = await db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId);
     if (user is null)
     {
-        return Results.BadRequest("User is not found.");
+        return Results.NotFound("User is not found.");
     }
 
     return Results.Ok(user.Balance);
@@ -347,15 +352,15 @@ app.MapPatch("/balance/add", async (HttpContext context, ApplicationContext db, 
     {
         return Results.BadRequest("Incorrect amount.");
     }
-    if (!int.TryParse(context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out int userId))
+    if (!TryGetUserId(context, out int userId))
     {
-        return Results.BadRequest("User is not found.");
+        return Results.NotFound("User is not found.");
     }
 
     var user = await db.Users.FindAsync(userId);
     if (user is null)
     {
-        return Results.BadRequest("User is not found.");
+        return Results.NotFound("User is not found.");
     }
 
     user.Balance += amount;
@@ -381,7 +386,8 @@ app.MapPost("/storage/item/add", async (ApplicationContext db, string name, int 
     });
 
     await db.SaveChangesAsync();
-    return Results.Ok();
+
+    return Results.NoContent();
 })
     .WithOpenApi()
     .RequireAuthorization(new AuthorizeAttribute { Roles = "Admin" });
@@ -415,7 +421,7 @@ app.MapPatch("/storage/item/change", async (ApplicationContext db, int id, strin
     // Сохраняем изменения
     await db.SaveChangesAsync();
 
-    return Results.Ok();
+    return Results.NoContent();
 })
     .WithOpenApi()
     .RequireAuthorization(new AuthorizeAttribute { Roles = "Admin" });
@@ -478,4 +484,8 @@ static string GenerateStockWarningMessages(List <ItemToChange> items)
     }
 
     return stringBuilder.ToString();
+}
+static bool TryGetUserId(HttpContext context, out int userId)
+{
+    return int.TryParse(context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out userId);
 }
