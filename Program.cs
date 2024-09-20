@@ -1,8 +1,7 @@
-using Azure;
+using AutoMapper;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Metadata.Conventions;
 using Microsoft.IdentityModel.Tokens;
 using ShoppingList;
 using ShoppingList.Entities;
@@ -24,6 +23,8 @@ builder.Services.AddDbContext<ApplicationContext>(options => options.UseSqlServe
 // Чтение конфигурации JWT из appsettings.json
 var jwtSettings = builder.Configuration.GetSection("Jwt");
 var adminIds = builder.Configuration.GetValue<List<int>>("AdminIds")!;
+
+builder.Services.AddAutoMapper(typeof(Program));
 
 // Добавление аутентификации
 builder.Services.AddAuthentication(options =>
@@ -94,7 +95,7 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
-app.MapGet("/cart", async (HttpContext context, ApplicationContext db) =>
+app.MapGet("/cart", async (HttpContext context, ApplicationContext db, IMapper mapper) =>
 {
     if (!int.TryParse(context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out int userId))
     {
@@ -110,7 +111,9 @@ app.MapGet("/cart", async (HttpContext context, ApplicationContext db) =>
     }
     else
     {
-        var response = items.Select(i => new ItemDTO { Name = i.Name, Quantity = i.OriginalQuantity, Price = i.Price });
+        var response = mapper.Map<IEnumerable<ItemDTO>>(items);
+        //var response = items.Select(i => new ItemDTO { Name = i.Name, Quantity = i.OriginalQuantity, Price = i.Price });
+
         return Results.Ok(response);
     }
 })
@@ -447,7 +450,6 @@ static string GenerateJwtToken(IConfigurationSection jwtSettings, string login, 
 
     return new JwtSecurityTokenHandler().WriteToken(token);
 }
-
 static async Task<List<ItemToChange>> GetCart(ApplicationContext db, int userId)
 {
     var items = await db.UserItems
