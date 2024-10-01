@@ -31,7 +31,7 @@
 
 This API demonstrates a simplified structure for creating RESTful endpoints in ASP.NET Core using the Minimal API approach. Instead of traditional MVC controllers.
 
-### Screenshots
+## Screenshots
 
 ![1](https://github.com/user-attachments/assets/61a98590-5b73-4348-a0ae-f1ed4d4b2a48)
 ![2](https://github.com/user-attachments/assets/9cc8b818-8b51-46fe-a400-261612baf472)
