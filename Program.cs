@@ -22,7 +22,7 @@ builder.Services.AddDbContext<ApplicationContext>(options => options.UseSqlServe
 
 // Чтение конфигурации JWT из appsettings.json
 var jwtSettings = builder.Configuration.GetSection("Jwt");
-var adminIds = builder.Configuration.GetValue<List<int>>("AdminIds")!;
+var adminIds = builder.Configuration.GetValue<List<int>>("AdminIds") ?? [];
 
 builder.Services.AddAutoMapper(typeof(Program));
 
@@ -80,7 +80,6 @@ builder.Services.AddSwaggerGen(c =>
     });
 });
 
-// Метод генерации JWT-
 var app = builder.Build();
 
 app.UseAuthentication();
@@ -103,24 +102,28 @@ app.MapGet("/cart", async (HttpContext context, ApplicationContext db, IMapper m
     }
 
     var items = await GetCart(db, userId);
+
+    if (items.Count <= 0)
+    {
+        Results.Ok();
+    }
+
     var errors = GenerateStockWarningMessages(items);
 
     if (errors != "")
     {
         return Results.Conflict(errors);
     }
-    else
-    {
-        var response = mapper.Map<IEnumerable<ItemDTO>>(items);
-        //var response = items.Select(i => new ItemDTO { Name = i.Name, Quantity = i.OriginalQuantity, Price = i.Price });
+ 
+    var response = mapper.Map<IEnumerable<ItemDTO>>(items);
+    //var response = items.Select(i => new ItemDTO { Name = i.Name, Quantity = i.OriginalQuantity, Price = i.Price });
 
-        return Results.Ok(response);
-    }
+    return Results.Ok(response);
 })
     .WithOpenApi()
     .RequireAuthorization();
 
-app.MapDelete("/cart/remove", async (HttpContext context, ApplicationContext db, int itemId) =>
+app.MapDelete("/cart{itemId}", async (HttpContext context, ApplicationContext db, int itemId) =>
 {
     if (!TryGetUserId(context, out int userId))
     {
@@ -141,7 +144,7 @@ app.MapDelete("/cart/remove", async (HttpContext context, ApplicationContext db,
     .WithOpenApi()
     .RequireAuthorization();
 
-app.MapPatch("/cart/change-quantity", async (HttpContext context, ApplicationContext db, int itemId, int quantity) =>
+app.MapPatch("/cart/{itemId}", async (HttpContext context, ApplicationContext db, int itemId, int quantity) =>
 {
     if (quantity <= 0)
     {
@@ -172,7 +175,7 @@ app.MapPatch("/cart/change-quantity", async (HttpContext context, ApplicationCon
     .WithOpenApi()
     .RequireAuthorization();
 
-app.MapPost("/cart/add", async (HttpContext context, ApplicationContext db, int itemId, int quantity) =>
+app.MapPut("/cart/{itemId}", async (HttpContext context, ApplicationContext db, int itemId, int quantity) =>
 {
     if (itemId <= 0 || quantity <= 0)
     {
@@ -211,7 +214,7 @@ app.MapPost("/cart/add", async (HttpContext context, ApplicationContext db, int 
     .WithOpenApi()
     .RequireAuthorization();
 
-app.MapPost("/cart/checkout", async (HttpContext context, ApplicationContext db) =>
+app.MapPost("/orders", async (HttpContext context, ApplicationContext db) =>
 {
     if (!TryGetUserId(context, out int userId))
     {
@@ -264,7 +267,6 @@ app.MapGet("/my-storage", async (HttpContext context, ApplicationContext db) =>
     }
 
     var items = await db.UserItems
-        .Include(ui => ui.Item)
         .Where(ui => ui.UserId == userId && ui.Status == ItemStatus.Purchased)
         .AsNoTracking()
         .Select(ui => new
@@ -324,7 +326,7 @@ app.MapPost("/login", async (HttpContext context, string login, string password,
         return Results.Ok(new { token });
     }
 
-    return Results.NotFound("User is not found.");
+    return Results.NotFound("User with such login and password is not found.");
 })
     .WithOpenApi();
 
@@ -346,7 +348,7 @@ app.MapGet("/balance", async (HttpContext context, ApplicationContext db) =>
     .WithOpenApi()
     .RequireAuthorization();
 
-app.MapPatch("/balance/add", async (HttpContext context, ApplicationContext db, decimal amount) =>
+app.MapPatch("/balance", async (HttpContext context, ApplicationContext db, decimal amount) =>
 {
     if (amount <= 0)
     {
@@ -371,7 +373,7 @@ app.MapPatch("/balance/add", async (HttpContext context, ApplicationContext db, 
     .WithOpenApi()
     .RequireAuthorization();
 
-app.MapPost("/storage/item/add", async (ApplicationContext db, string name, int quantity, decimal price) =>
+app.MapPost("/storage/item", async (ApplicationContext db, string name, int quantity, decimal price) =>
 {
     if (quantity < 0 || price <= 0 || string.IsNullOrWhiteSpace(name))
     {
@@ -392,7 +394,7 @@ app.MapPost("/storage/item/add", async (ApplicationContext db, string name, int 
     .WithOpenApi()
     .RequireAuthorization(new AuthorizeAttribute { Roles = "Admin" });
 
-app.MapPatch("/storage/item/change", async (ApplicationContext db, int id, string? name, decimal? price, int? newQuantity, int? addToQuantity) =>
+app.MapPatch("/storage/item/{id}", async (ApplicationContext db, int id, string? name, decimal? price, int? newQuantity, int? addToQuantity) =>
 {
     // Проверяем некорректное использование newQuantity и addToQuantity
     if (newQuantity.HasValue && addToQuantity.HasValue)
@@ -460,7 +462,6 @@ static async Task<List<ItemToChange>> GetCart(ApplicationContext db, int userId)
 {
     var items = await db.UserItems
         .Where(ui => ui.UserId == userId && ui.Status == ItemStatus.InCart)
-        .Include(ui => ui.Item)
         .Select(ui => new ItemToChange
         {
             Name = ui.Item!.Name!,
